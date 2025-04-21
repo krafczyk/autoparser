@@ -102,8 +102,8 @@ class _Parser(Generic[T]):
     # ---- construction ---------------------------------------------------- #
     def __init__(self, schema: type[T]|tuple[str],
                  *,
-                 _parser: argparse.ArgumentParser | None = None) -> None:
-        self._parser = _parser or argparse.ArgumentParser()
+                 _parser: argparse.ArgumentParser | None = None, **kwargs: Any) -> None: # pyright: ignore[reportExplicitAny,reportAny]
+        self._parser = _parser or argparse.ArgumentParser(**kwargs) # pyright: ignore[reportAny]
         self._subparsers: argparse._SubParsersAction[Any]|None = None # pyright: ignore[reportExplicitAny,reportPrivateUsage]
 
         if type(schema) is tuple:
