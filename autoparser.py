@@ -5,24 +5,18 @@ Recursive dataclass → argparse bridge with type‑safe dispatch.
 from __future__ import annotations
 import argparse, dataclasses as _dc
 from dataclasses import MISSING
-from typing import (Any, Callable, Generic, Protocol, ClassVar, overload,
+from typing import (Any, Callable, Generic, Protocol, ClassVar,
                     TypeVar, Annotated, get_args, get_origin)
 
 # Define a protocol capturing 'dataclass-ness'
 class _DataclassType(Protocol):
     __dataclass_fields__: ClassVar[dict[str, _dc.Field[Any]]] # pyright: ignore[reportExplicitAny]
 
+
 # --------------------------------------------------------------------------- #
 T = TypeVar('T', bound=_DataclassType)
 U = TypeVar('U', bound=_DataclassType)
 Handler = Callable[[T], None]
-
-
-class Result(Generic[T]):
-    __slots__: tuple[str,...] = ('args', 'func')
-    def __init__(self, args: T, func: Handler[T] | None=None):
-        self.args: T = args
-        self.func: Handler[T]|None = func
 
 
 class Arg:
@@ -91,69 +85,69 @@ def _namespace_to_dataclass(ns: argparse.Namespace, cls: type[T]) -> T:
     return cls(**vals)  # type: ignore[arg-type]
 
 
+class SubParsers(object):
+    """Internal wrapper; users obtain it via the `ArgumentParser` factory."""
+    _subparsers: argparse.Action
+
+    # ---- construction ---------------------------------------------------- #
+    def __init__(self, subparsers: argparse.Action) -> None:
+        self._subparsers = subparsers
+
+    # ---- API surface ----------------------------------------------------- #
+    def add_parser(self,
+                   name: str,
+                   schema: type[_DataclassType],
+                   handler: Handler[_DataclassType]|None=None) -> ArgumentParser:
+        subparser = self._subparsers.add_parser(name)
+        _add_dataclass_arguments(subparser, schema)
+        if handler is not None:
+            subparser.set_defaults(func=handler)
+        return ArgumentParser(subparser)
+
+
 # --------------------------------------------------------------------------- #
-class _Parser(Generic[T]):
+class ArgumentParser(object):
     """Internal wrapper; users obtain it via the `ArgumentParser` factory."""
 
     _parser: argparse.ArgumentParser
-    _root_cls: type[T] | None
-    _names_left: set[str]
 
     # ---- construction ---------------------------------------------------- #
-    def __init__(self, schema: type[T]|tuple[str],
-                 *,
-                 _parser: argparse.ArgumentParser | None = None, **kwargs: Any) -> None: # pyright: ignore[reportExplicitAny,reportAny]
+    def __init__(self,
+                 _parser: argparse.ArgumentParser | None = None,
+                 **kwargs: Any) -> None: # pyright: ignore[reportExplicitAny,reportAny]
         self._parser = _parser or argparse.ArgumentParser(**kwargs) # pyright: ignore[reportAny]
-        self._subparsers: argparse._SubParsersAction[Any]|None = None # pyright: ignore[reportExplicitAny,reportPrivateUsage]
-
-        if type(schema) is tuple:
-            names: set[str] = set(schema)
-            if not names:
-                raise ValueError("tuple[str,...] must list at least one sub‑command")
-            self._root_cls = None
-            self._names_left = names
-            self._subparsers = self._parser.add_subparsers(dest='_cmd', required=True)
-        elif _is_dataclass(schema):
-            self._root_cls = schema
-            _add_dataclass_arguments(self._parser, schema)
-        else:
-            raise TypeError("schema must be dataclass or tuple[str,...]")
 
     # ---- API surface ----------------------------------------------------- #
-    def add_subparser(self,
-                      name: str,
-                      schema: type[U],
-                      func: Handler[U]|None = None) -> _Parser[U]:
-        """Define a sub‑command.  Returns a *new* _Parser for further nesting."""
-        if self._subparsers is None:
-            raise RuntimeError("Cannot add subparsers when root is a dataclass")
+    def add_arguments(self,
+                      schema: type[_DataclassType],
+                      handler: Handler[_DataclassType]|None=None) -> None:
+        _add_dataclass_arguments(self._parser, schema)
+        self._parser.set_defaults(_handler=handler, _schema=schema)
 
-        if name not in self._names_left:
-            raise ValueError(f"Unknown subcommand '{name}' " + \
-                             f"(expected one of {sorted(self._names_left)})")
-        self._names_left.remove(name)
+    def add_argument(self, # pyright: ignore[reportAny]
+                     *args: Any, **kwargs: Any) -> Any: # pyright: ignore[reportExplicitAny,reportAny]
+        return self._parser.add_argument(*args, **kwargs) # pyright: ignore[reportAny]
 
-        sub: argparse.ArgumentParser = self._subparsers.add_parser(name)
-        child = _Parser(schema, _parser=sub)
-
-        # leaf? (dataclass + handler)
-        if _is_dataclass(schema):
-            if func is None:
-                raise ValueError("Leaf subparser requires a handler")
-            sub.set_defaults(_cls=schema, _handler=func)
-        elif func is not None:
-            raise ValueError("Handler can only be attached to a dataclass leaf")
-
-        return child
+    def add_subparsers(self,
+                       **kwargs: Any) -> SubParsers: # pyright: ignore[reportExplicitAny,reportAny]
+        subparsers = self._parser.add_subparsers(**kwargs) # pyright: ignore[reportAny]
+        return SubParsers(subparsers)
 
     # ---- parsing --------------------------------------------------------- #
-    def parse_args(self, argv: list[str]|None = None) -> Result[T]:
-        ns = self._parser.parse_args(argv)
+    def parse_args(self, argv: list[str]|None = None) -> Result[_DataclassType]:
+        ns: argparse.Namespace = self._parser.parse_args(argv)
+
+        if not hasattr(ns, '_schema'):
+            raise ValueError("No schema found in Namespace")
+
+        args: _DataclassType = _namespace_to_dataclass(ns, ns._schema)
+
+        return Result(args, ns, ns._handler)
 
         # dataclass root without sub‑parsers
         if hasattr(ns, '_handler') is False and self._subparsers is None and self._root_cls is not None:
             args: _DataclassType = _namespace_to_dataclass(ns, self._root_cls)  # type: ignore[arg-type]
-            return Result(args, None)
+            return Result(args, ns, None)
 
         # descend until the deepest leaf has stamped _cls/_handler
         if not hasattr(ns, '_cls'):
@@ -168,15 +162,3 @@ class _Parser(Generic[T]):
 
         args = _namespace_to_dataclass(ns, cls)
         return Result(args, handler)
-
-
-# --------------------------------------------------------------------------- #
-
-# factory with overloads
-@overload
-def ArgumentParser(schema: type[T]) -> _Parser[T]: ...
-@overload
-def ArgumentParser(schema: tuple[str,...]) -> _Parser[_DataclassType]: ...
-def ArgumentParser(schema) -> _Parser:  # noqa: N802 D401
-    """Factory returning a parser builder."""
-    return _Parser(schema)
