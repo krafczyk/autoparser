@@ -13,7 +13,7 @@ with full nesting/subparser support and type‑safe dispatch.
     author_email='krafczyk.matthew@gmail.com',
     url='https://github.com/krafczyk/autoparser',  # adjust or remove
     py_modules=['autoparser'],
-    python_requires='>=3.8',
+    python_requires='>=3.10',
     install_requires=[
         # no dependencies outside the stdlib
     ],
