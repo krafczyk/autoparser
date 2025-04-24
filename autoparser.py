@@ -10,12 +10,12 @@ from typing import (Any, Callable, Protocol, ClassVar,
 import types
 
 # Define a protocol capturing 'dataclass-ness'
-class _DataclassType(Protocol):
+class DataclassType(Protocol):
     __dataclass_fields__: ClassVar[dict[str, _dc.Field[Any]]] # pyright: ignore[reportExplicitAny]
 
 
 # --------------------------------------------------------------------------- #
-T = TypeVar('T', bound=_DataclassType)
+T = TypeVar('T', bound=DataclassType)
 Handler = Callable[[T], None]
 
 
